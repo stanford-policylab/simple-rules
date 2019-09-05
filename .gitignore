@@ -1,0 +1,88 @@
+# Compiled source #
+###################
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+*.pyc
+
+# Packages #
+############
+# it's better to unpack these files and commit the raw source
+# git has its own built in compression methods
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Logs and databases #
+######################
+*.log
+*.sql
+*.sqlite
+*.aux
+*.bbl
+*.blg
+.RData
+*.RData*
+*.Rdata*
+.RHistory
+.Rhistory
+*.Rout
+*.csv
+*.tsv
+*.rds
+
+# ignore auxillary LaTeX files                  #
+# from: https://gist.github.com/kogakure/149016 #
+#################################################
+*.aux
+*.glo
+*.idx
+*.toc
+*.ist
+*.acn
+*.acr
+*.alg
+*.bbl
+*.blg
+*.dvi
+*.glg
+*.gls
+*.ilg
+*.ind
+*.lof
+*.lot
+*.maf
+*.mtc
+*.mtc1
+*.out
+*.synctex.gz
+*.xwm
+*.fdb
+*.*latexmk
+*.fls
+submission/
+
+# OS generated files #
+######################
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# VIM-related files #
+#####################
+*.swp
+*.swo
+*~
+.Rproj.user
