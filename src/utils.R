@@ -3,21 +3,35 @@ library(assertthat)
 library(plyr)
 library(tidyverse)
 library(doMC)
+library(optparse)
 
-VERSION_ <- "JRSSAv3"
+OPT_LIST <- list(
+  make_option(c("-v", "--version"), default = "v3",
+              help = "Version string to keep track of runs"),
+  make_option(c("-c", "--use_saved_models"), action="store_true",
+              default=TRUE,
+              help=paste("Store models as .rds, and load",
+                         "(instead of fitting) if a saved model",
+                         "already exists [default]")),
+  make_option(c("-f", "--force_fit"), action="store_false",
+              dest="use_saved_models",
+              help="Ignore saved models and fit all models from scratch")
+)
+
+OPT_PARSER <- OptionParser(option_list = OPT_LIST)
+opt <- parse_args(OPT_PARSER)
+
+use_saved_models <- opt$use_saved_models
+
 DATA_DIR <- normalizePath("../data", mustWork = TRUE)
 PLOT_PATH <- normalizePath("../figs", mustWork = TRUE)
 
 # Where "final" version-specific aggregate predictions/performance metrics
-# get saved
-PREDS_PATH <- file.path(DATA_DIR, sprintf("predictions.%s.rds", VERSION_))
-PERFS_PATH <- file.path(DATA_DIR, sprintf("performance.%s.rds", VERSION_))
-
-SLIM_ACC_PATH <- file.path(DATA_DIR, "slim_acc_performance.RData")
-SLIM_ROC_PATH <- file.path(DATA_DIR, "slim_roc_performance.RData")
+PREDS_PATH <- file.path(DATA_DIR, sprintf("predictions.%s.rds", opt$version))
+PERFS_PATH <- file.path(DATA_DIR, sprintf("performance.%s.rds", opt$version))
 
 nproc <- detectCores()
-maxcores <- 50  # Use at most maxcores cores
+maxcores <- 10  # Use at most maxcores cores
 nproc <- min(maxcores, nproc)
 registerDoMC(cores = nproc)
 
@@ -26,7 +40,6 @@ make_formula <- function(y, vars) {
   as.formula(paste(y, "~", paste(vars, collapse = "+")))
 }
 
-use_saved_models <- FALSE  # Set to FALSE to train models from scratch
 
 getCleanDataPath <- function(dataname) {
   file.path(DATA_DIR, dataname, "data.rds")
