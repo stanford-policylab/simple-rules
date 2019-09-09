@@ -1,0 +1,410 @@
+---
+title: "Exploration of SRR on UCI datasets"
+output: 
+  html_document: 
+    df_print: kable
+    toc: yes
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Initial setup
+
+## Headers and includes
+
+First we load constants and paths to the data, and set the seed for replication.
+Note that when running for the first time, you should run `make preprocess` 
+from the project root:
+
+```{sh}
+cd .. && make preprocess
+```
+
+to preprocess the raw data.
+
+```{r includes, message=FALSE}
+# Load constants and paths
+source("utils.R")     
+
+library(leaps)
+library(glmnet)
+
+theme_set(theme_bw())
+set.seed(94305)
+```
+
+## Helper functions
+
+Next, we define some helper functions.
+While most of the computational details are implemented in the functions below,
+if you just want to try out SRR on a UCI data set, these can be ignored for now.
+But if you want to try SRR on your own dataset, these functions should be 
+all you actually need.
+
+```{r helper functions, message=FALSE}
+fit_lasso <- function (X, y, fold, k, type = NULL, use_saved = FALSE) {
+  # Fit a lasso model with the matrix X and target y
+
+  # Args:
+  #   X: model.matrix
+  #   y: corresponding labels
+  #   fold, k: name of fold and value of k to identify model; used for saving cache
+  #   type: model identifier; used for saving cache
+  #   use_saved: whether to use cache (if it exists)
+
+  # Returns:
+  #   an object of class glmnet::cv.glmnet; see ?glmnet::cv.glmnet for details
+  modelname <- getModelName("lasso", type)
+  model_path <- getModelPath(dataname, fold, k = k, modelname = modelname)
+
+  lambda <- 1000
+
+  if (use_saved) {
+    if (file.exists(model_path)) {
+      lasso_model <- read_model(model_path)
+    }
+  }
+
+  if (!exists("lasso_model")) {
+    lasso_model <- cv.glmnet(X, y, type.measure = "auc", alpha = 1,
+                             nlambda = lambda, family = "binomial")
+  }
+
+  lasso_model
+}
+
+get_subsets <- function (mm, y) {
+  # Given a model.matrix and labels y, return a logical matrix of subsets
+
+  # Args:
+  #   mm: model.matrix
+  #   y: corresponding labels
+
+  # Returns:
+  #   list of (subsets, assign)
+  real_mm_cols <- colnames(mm) != "(Intercept)"
+  ass <- attr(mm, "assign")
+  mm <- mm[, real_mm_cols]
+  ass <- ass[real_mm_cols]
+
+  maxfeats <- dim(mm)[2]  # number of total columns
+
+  sink("/dev/null")  # Redirect output from leaps
+  search <- regsubsets(mm, y, method = "forward", intercept = TRUE,
+                       really.big = TRUE, nvmax = maxfeats)
+  sink()  # END: redirect output from leaps
+  subsets <- summary(search)$which
+
+  non_intercept_cols <- colnames(subsets) != "(Intercept)"
+  subsets <- subsets[, non_intercept_cols]  # Remove (Intercept) term
+
+  e <- assert_that(dim(subsets)[2] == length(ass),
+                   msg = "subsets and assign have incompatible dimensions!")
+
+  list(subsets = subsets, ass = ass)
+}
+
+get_formulas <- function(ass, subsets, features) {
+  # Get forula from subsets that use exactly n original features
+
+  # Args:
+  #   ass: the "assign" attribute from a full model.matrix
+  #   subsets: a summary.regsubsets object
+  #   features: character vector of original feature columns
+
+  # Returns:
+  #   data.frame with columns k and corresponding formula
+  ret <- bind_rows(apply(subsets, 1, function(s) {
+    # Extract original index of variables that are included
+    v <- unique(ass[s])
+    f <- features[v]
+    nv <- length(f)
+    tibble(n = nv, feats = list(f))
+  })) %>%
+  distinct(n, .keep_all = TRUE) %>%
+  mutate(formula = map(feats, ~ reformulate(.x, response="label")))
+
+  ret
+}
+
+discretize <- function(d_train, d_test, n_bins) {
+  # Discretize numerical columns in train/test data to n_bins of equal size,
+  # based on cutoffs derived from the training data
+
+  # Args:
+  #   d_train, d_test: data frames for train and test
+  #   n_bins: number of bins for each numeric column
+
+  # Return:
+  #   list of two data frames, $train and $test
+  numeric_cols <- names(d_train[, unlist(lapply(d_train, is.numeric))])
+  qs <- seq(1/n_bins, 1, 1/n_bins)
+
+  disc_train <- d_train
+  disc_test <- d_test
+
+  if (length(numeric_cols) > 0) {  # Non-zero numeric columns
+    for (cn in numeric_cols) {
+      col_train <- d_train[[cn]]
+      col_test <- d_test[[cn]]
+
+      breaks <- unique(quantile(col_train, qs))
+      breaks[n_bins] <- Inf
+      disc_train[[cn]] <- as.factor(cut(col_train, c(-Inf, breaks)))
+      disc_test[[cn]] <- as.factor(cut(col_test, c(-Inf, breaks)))
+    }
+  }
+
+  list(train = disc_train, test = disc_test)
+}
+
+get_k_feat_model_from_formula <- function(
+  formula,
+  train_df,
+  train_labels,
+  k,
+  m_values
+  ){
+  # Get SRR model for k given formula
+
+  # Args:
+  #   formula: model formula
+  #   train_df, test_df: original train/test data frames
+  #   train_labels, test_labels: original train/test labels
+  #   k: parameter k to get model for
+  
+  # Returns: list of
+  #   $model: the original lasso model 
+  #   $round: coefficient matrix where each row represents a variable and each 
+  #           column represents the coefficient corresponding to a rounding 
+  #           value M, as specified in the `m_values`
+
+  # Update the selected subset
+  train_ssmm <- model.matrix(formula, data = train_df)
+
+  # Lasso model is used for SRR, so we keep a copy
+  m_lasso_k <- fit_lasso(train_ssmm, train_labels, fold = 5, k)
+
+  # Use trained model to generate heuristics
+  roundM_model <- as.matrix(coef(m_lasso_k, s = "lambda.min"))
+  inf_model <- as.matrix(coef(m_lasso_k, s = "lambda.min"))
+  coef_names <- rownames(roundM_model)
+  ind_non_intercept <- coef_names != "(Intercept)"
+  nfeat <- dim(roundM_model)[1]
+  roundM_model <- array(roundM_model, c(nfeat, length(m_values)))
+  max_coef <- max(abs(roundM_model[ind_non_intercept, ]))
+  tmp.rounds <- roundM_model[ind_non_intercept, ]
+  tmp.rounds <- (tmp.rounds/max_coef) %*% diag(m_values + 0.499)
+  tmp.rounds <- round(tmp.rounds)
+  roundM_model[ind_non_intercept, ] <- tmp.rounds
+
+  rownames(roundM_model) <- coef_names
+  colnames(roundM_model) <- m_values
+
+  list(model = m_lasso_k, round = roundM_model[ind_non_intercept,])
+}
+
+```
+
+# Hyper parameters
+
+Here, we setup the parameters we would like to analyze.
+These include:
+
+- the data set to analyze
+- the number of features to include (default $k = 5$)
+- the range of integers to round coefficients to (default $M = 3$)
+- and number of bins to discretize continuous variables to (default: `3`)
+
+The list of available UCI datasets are:
+
+```{r parameters, echo=FALSE}
+data_dirs <- list.dirs(DATA_DIR, full.names = FALSE, recursive = FALSE)
+print(data_dirs)
+```
+
+Select one of the available datasets for the `dataname` variable, along with a
+other hyper parameters in the next cell:
+
+```{r set data}
+# Set the specific data parameters here
+dataname <- "german_credit"
+
+# Coefficients rounded to use M integers
+Ms <- c(1:5, 10)  
+
+
+# Hyper-parameters
+# Value of M and k to compute rules for
+target_M <- 3
+target_k <- 5
+
+# Number of equal-sized bins for discretization
+N_BINS <- 3       
+```
+
+While the main results in the paper are average over 10 folds, in order to 
+inspect a single rule in detail with simplicity, we consider a single split,
+where one of the folds is considered 
+the test set, and the remaining 9 folds are the training set.
+The `test_fold` $\in [1, 10]$ variable indicates which fold to hold-out as the
+test set.
+
+```{r set fold}
+test_fold <- 1
+```
+
+# SRR
+
+Now we prepare the data for SRR, fit models, and evaluate the resulting rules.
+
+## Initial setup 
+
+Here we load and split the data.
+
+```{r initialization}
+clean_data <- dataname %>%
+  getCleanDataPath() %>%
+  read_rds()
+
+fold_id <- "fold_idx__"
+
+scores <- clean_data %>%
+  select_(.dots = c("label", fold_id, "example_id"))
+data <- clean_data %>%
+  select(-starts_with("fold_idx"), -example_id)
+
+features <- colnames(data %>% select(-label))
+model_formula <- reformulate(features, response="label")
+
+train_ind <- scores[fold_id] != test_fold
+test_ind <- !train_ind
+
+train_df <- data[train_ind, ]
+train_labels <- train_df$label
+
+test_df <- data[test_ind, ]
+test_labels <- test_df$label
+test_id <- scores$example_id[test_ind]
+```
+
+## Fit SRR models 
+
+We now fit SRR models for the specified `target_k` and range of `Ms`.
+Most of the logic is implemented in the various helper function defined at the
+very top of this document.
+
+```{r SRR, warning=FALSE}
+disc_dfs <- discretize(train_df, test_df, N_BINS)
+
+disc_train_df <- disc_dfs$train
+disc_test_df <- disc_dfs$test
+disc_feats <- colnames(disc_train_df %>% select(-label))
+disc_formula <- reformulate(disc_feats, response="label")
+disc_mm <- model.matrix(disc_formula, data = disc_train_df)
+
+disc_params <- get_subsets(disc_mm, train_labels)
+disc_subsets <- disc_params$subsets
+disc_assign <- disc_params$ass
+
+formulas <- get_formulas(disc_assign, disc_subsets, disc_feats)
+
+srr_formula <- formulas %>%
+  filter(n == target_k) %>%
+  pull(formula) %>%
+  first()
+
+k_model <- get_k_feat_model_from_formula(srr_formula,
+                                         disc_train_df,
+                                         train_labels,
+                                         k=target_k,
+                                         m_values=Ms)
+```
+
+We can investigate the SRR model corresponding to `target_M` and `target_k`:
+
+```{r explore model}
+enframe(k_model$round[, target_M]) %>% 
+  filter(value != 0)
+```
+
+
+## Performance evaluation
+
+We now use the remaining test fold to evaluate the SRR model above.
+First, we generate predictions (scores) for each item in the test set.
+These results are stored in the `preds` data frame.
+
+```{r preds, warning=FALSE}
+disc_test_mm <- model.matrix(srr_formula, data = disc_test_df)
+
+srr_pred <- tibble(
+  example_id = test_id,
+  srr = c(disc_test_mm[, rownames(k_model$round)] %*% k_model$round[, target_M])
+)
+
+preds <- tibble(labels = test_labels == 1, example_id = test_id) %>%
+  left_join(srr_pred, by = "example_id")
+```
+
+Given the predictions, we can compute `AUC` below. Note that we use the `auc` 
+function internal to `glmnet` for convenient illustration.
+
+```{r auc}
+auc_df <- preds %>%
+  gather(method, pred, srr) %>%
+  group_by(method) %>%
+  summarize(auc = auc(labels, pred))
+auc_df
+```
+
+For a more comprehensive evaluation, we can compute (the values of) a 
+confusion matrix that correspond to each possible threshold of the generated
+SRR scores.
+
+```{r perf}
+# Generate confusion matrix values at each policy/threshold
+eval_df <- preds %>%
+  group_by(srr) %>%
+  summarize(pos = n(),
+            tp = sum(labels),
+            fp = pos - tp) %>%
+  ungroup() %>%
+  arrange(desc(srr)) %>%
+  mutate(method = "srr",
+         n_pos = cumsum(pos),
+         n_neg = sum(pos) - n_pos,
+         n_true = sum(tp),
+         n_false = sum(fp),
+         n_tp = cumsum(tp),
+         n_fp = cumsum(fp),
+         tpr = n_tp / n_true,
+         fpr = n_fp / n_false,
+         prec = n_tp / n_pos,
+         p_lend = 1 - (n_pos / sum(pos)),
+         p_def = (n_true - n_tp)/sum(pos))
+```
+
+Ideally, given the scores and labels, each model should be evaluated against
+metrics that are ultimately of interest within each specific context. 
+But for convenience and illustration, here we simply plot the ROC curve as an
+example:
+
+```{r plot}
+roc_curve <- 
+  ggplot(eval_df, aes(x = fpr, y = tpr)) +
+  geom_abline(color = "black", linetype = "dashed", intercept = 0, slope = 1) +
+  geom_line(color = "red") +
+  scale_x_continuous("\nFalse positive rate", 
+                     labels = scales::percent_format(1)) +
+  scale_y_continuous("True positive rate\n",
+                     labels = scales::percent_format(1)) +
+  coord_fixed(ratio = 1) +
+  theme(axis.title = element_text(size = 18),
+        axis.text = element_text(size = 14))
+roc_curve
+```
