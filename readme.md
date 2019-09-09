@@ -17,15 +17,26 @@ make plot        # Generate plots
 
 ## Appendix case study
 
-Case study in the appendix can be reproduced by running the `src/case_study.R` script.
+Case study in the appendix can be reproduced with
+
+```bash
+make case
+```
+
+which runs the script `src/case_study.R` and its dependencies.
 
 ## Exploration notebook
 
 An exploration notebook `src/explore.Rmd` is provided for convenient exploration.
-This requires that the data are preprocessed, so run
+This requires that the data are preprocessed.
+
+The preprocessing command `make preprocess`` is included as a shell script in the
+first executable cell of the markdown file.
+However, if your system setup does not support running `sh` commands (which might be the case
+for Windows machines), manually run
 
 ```bash
 make preprocess
 ```
 
-before exploring the `Rmd` file.
+and remove the corresponding cell of the `Rmd` file before compiling.

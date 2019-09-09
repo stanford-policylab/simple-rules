@@ -39,10 +39,6 @@ data=$(addsuffix /data.rds, $(addprefix data/, $(names)))
 pred=$(addsuffix /pred.rds, $(addprefix data/, $(names)))
 perf=$(addsuffix /perf.rds, $(addprefix data/, $(names)))
 
-
-# Helpful shortcuts
-print-%: ; @echo $* = $($*)
-
 .PHONY: preprocess
 preprocess: $(data)
 
@@ -54,6 +50,10 @@ eval: $(perf)
 
 .PHONY: plot
 plot: fig/Fig1_color_auc_no_legend.pdf
+
+.PHONY: case
+case: data/german_credit/data.rds
+	cd src && ./case_study.R
 
 data/%/data.rds: $(raw) src/utils.R src/preprocess.R
 	cd src && ./preprocess.R $(RFLAGS)
