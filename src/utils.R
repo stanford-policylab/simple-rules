@@ -275,3 +275,10 @@ normal_prob_area_plot <- function(
    + geom_ribbon(data = area, mapping = aes(x = x, ymin = ymin, ymax = ymax))
    + scale_x_continuous(limits = limits))
 }
+
+auc <- function(labels, pred) {
+  pred.df <- prediction(pred, labels)
+  res <- performance(pred.df, "auc")
+  res <- unlist(slot(res, "y.values"))
+  return(res)
+}
