@@ -4,6 +4,7 @@ library(plyr)
 library(tidyverse)
 library(doMC)
 library(optparse)
+library(ROCR)
 
 OPT_LIST <- list(
   make_option(c("-v", "--version"), default = "v3",
