@@ -4,6 +4,7 @@ library(plyr)
 library(tidyverse)
 library(doMC)
 library(optparse)
+library(ROCR)
 
 OPT_LIST <- list(
   make_option(c("-v", "--version"), default = "v3",
@@ -274,4 +275,11 @@ normal_prob_area_plot <- function(
                mapping = aes(x = x, y = y))
    + geom_ribbon(data = area, mapping = aes(x = x, ymin = ymin, ymax = ymax))
    + scale_x_continuous(limits = limits))
+}
+
+auc <- function(labels, pred) {
+  pred.df <- prediction(pred, labels)
+  res <- performance(pred.df, "auc")
+  res <- unlist(slot(res, "y.values"))
+  return(res)
 }
